@@ -1,448 +1,797 @@
-# Call2Kitchen backend — Phase 7 database verification preparation
+# 🍽️ Call2Kitchen
 
-Call2Kitchen is an AI-powered restaurant phone-ordering system for the Bolna Symphony Buildathon. A future Bolna voice agent will conduct the customer conversation. This backend is the trusted source of menu data and, in later phases, will enforce validation, prices, quotes, and confirmed orders.
+### AI-Powered Restaurant Phone Ordering System
 
-Phase 4 adds confirmed order creation. The database—not the voice model—revalidates trusted menu data and atomically persists an order and its item snapshots. Phase 5 documents the voice-agent plan. Phase 6 adds a narrow authenticated tool gateway. Phase 7 adds a forward-only database hardening migration and a staging verification procedure; it does not claim live Supabase verification.
+**Call2Kitchen** is an AI-powered restaurant ordering platform that enables customers to place food orders through natural voice conversations. It connects voice AI with a restaurant's menu, pricing, order validation, and kitchen workflow.
 
-The health endpoint still means only that the HTTP backend is running—it does **not** claim that Supabase is connected or healthy.
+The goal is simple: make restaurant phone ordering faster and more reliable without requiring staff to manually handle every call.
 
-## Architecture
+> **Core principle:** AI understands what the customer wants. The backend validates the order, calculates the price, and controls persistence.
+
+---
+
+## 📌 Table of Contents
+
+* [Overview](#-overview)
+* [Problem Statement](#-problem-statement)
+* [Key Features](#-key-features)
+* [How It Works](#-how-it-works)
+* [System Architecture](#-system-architecture)
+* [Technology Stack](#-technology-stack)
+* [Backend API](#-backend-api)
+* [Database Design](#-database-design)
+* [Security and Reliability](#-security-and-reliability)
+* [Project Structure](#-project-structure)
+* [Getting Started](#-getting-started)
+* [Environment Variables](#-environment-variables)
+* [Database Setup](#-database-setup)
+* [Testing](#-testing)
+* [Current Development Status](#-current-development-status)
+* [Roadmap](#-roadmap)
+
+---
+
+## 🎯 Overview
+
+Restaurant phone ordering can be time-consuming, especially during busy periods. Staff must answer calls, understand requests, check menu availability, calculate totals, and communicate orders to the kitchen.
+
+Call2Kitchen aims to automate this workflow using conversational AI and a backend that enforces business rules.
+
+The system is designed around three responsibilities:
+
+* **Voice AI:** Understand customer requests and guide the conversation.
+* **Backend:** Validate menu items, check availability, calculate totals, and create confirmed orders.
+* **Kitchen dashboard:** Provide restaurant staff with an interface for managing incoming orders.
+
+The project is being developed with a focus on backend reliability, safe order processing, and voice-agent integration.
+
+## ❗ Problem Statement
+
+Traditional phone ordering introduces several challenges:
+
+* Restaurant staff may miss calls during peak hours.
+* Orders can be misunderstood during conversations.
+* Menu availability and prices must be checked manually.
+* Incorrect quantities or totals can cause order disputes.
+* Orders must be communicated reliably to kitchen staff.
+
+Call2Kitchen addresses these problems by combining conversational AI with server-side validation and structured order storage.
+
+---
+
+## ✨ Key Features
+
+### 🤖 Conversational Voice Ordering
+
+* Designed for integration with Bolna voice AI.
+* Supports natural-language interactions for menu discovery and ordering.
+* Uses structured tools to connect the voice agent to backend operations.
+
+### 📋 Database-Driven Menu
+
+* Retrieves menu items from Supabase PostgreSQL.
+* Returns current item prices and availability.
+* Prevents the AI agent from treating its own generated prices as authoritative.
+
+### 💰 Reliable Order Quotation
+
+* Validates requested menu item IDs and quantities.
+* Checks item availability.
+* Calculates totals using trusted database prices.
+* Uses integer paise arithmetic internally to avoid floating-point money errors.
+
+### 🔐 Confirmed Order Creation
+
+* Uses server-generated quotes and confirmation tokens.
+* Applies server-side validation before order creation.
+* Uses PostgreSQL transactions through a database RPC for atomic order persistence.
+* Supports idempotency to prevent duplicate orders when requests are retried.
+
+### 🔌 Authenticated Tool Gateway
+
+* Exposes an allow-listed set of tools for the voice agent.
+* Supports bearer-secret authentication.
+* Validates tool inputs before executing backend operations.
+* Can disable direct quote and order routes when gateway mode is enabled.
+
+### 🧪 Automated Testing
+
+* Vitest-based unit and service tests.
+* Tests for menu behavior, order services, and tool-gateway logic.
+* Migration-related checks for critical database behavior.
+
+---
+
+## 🔄 How It Works
+
+The intended customer journey is:
+
+1. **Customer calls the restaurant.**
+2. **AI answers the call** and understands the customer's request.
+3. **Menu lookup:** The agent retrieves available menu items from the backend.
+4. **Order collection:** The agent collects item selections and quantities.
+5. **Order validation:** The backend verifies that the requested items exist and are available.
+6. **Price calculation:** The backend calculates the order total using database prices.
+7. **Customer confirmation:** The agent communicates the order summary and total, then obtains explicit confirmation.
+8. **Order persistence:** The backend validates the quote and creates the order.
+9. **Kitchen workflow:** The restaurant dashboard can display and manage the persisted order.
+
+**Important:** A generated quote is not proof of customer confirmation. The voice-agent workflow must obtain explicit customer confirmation before invoking the order-placement operation.
+
+The system must not claim an order was successfully placed until the backend confirms that the order was persisted.
+
+---
+
+## 🏗️ System Architecture
 
 ```text
-src/server.ts
-  ├─ validates application and Supabase configuration at startup
-  └─ starts the HTTP server
-
-src/app.ts
-  ├─ mounts /api/health
-  ├─ mounts /api/menu
-  ├─ mounts authenticated /api/tools/:toolName
-  ├─ disables direct quote/order HTTP routes when the gateway is enabled
-  └─ registers centralized error middleware
-
-src/routes/menu.routes.ts
-  └─ validates parameters and turns menu results into HTTP responses
-
-src/routes/order.routes.ts
-  └─ validates quote requests and returns an order quote
-
-src/orders/quote.schema.ts
-  └─ strictly validates items, UUIDs, quantities, and request shape
-
-src/orders/quote.service.ts
-  └─ verifies trusted menu data and calculates exact INR totals in paise
-
-src/orders/order.service.ts + order.repository.ts
-  └─ hashes confirmation data and invokes a transactional Supabase RPC
-
-src/tools/tool-gateway.service.ts
-  └─ calls the existing menu, quote-creation, and order services; it has no pricing or order-write shortcut
-
-src/middleware/tool-gateway-auth.middleware.ts
-  └─ validates an inbound bearer secret with a constant-time comparison
-
-supabase/migrations/20261021202000_create_order_confirmation_and_orders.sql
-  └─ creates quotes/orders/order_items and create_confirmed_order RPC
-
-supabase/migrations/20261021230000_harden_order_rpc_and_rls.sql
-  └─ enables RLS on server-owned order tables and verifies canonical request hashes in the RPC
-
-src/menu/menu.repository.ts
-  └─ uses the server-only Supabase client to query menu_items
-
-supabase/migrations/...sql  creates restaurants and menu_items
-supabase/seed.sql           inserts idempotent Spice Garden demo data
+                  ┌──────────────────────┐
+                  │      Customer        │
+                  │     Phone Call       │
+                  └──────────┬───────────┘
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │      Bolna AI        │
+                  │   Voice Agent        │
+                  └──────────┬───────────┘
+                             │
+                    Authenticated HTTPS
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │  Express Backend     │
+                  │                      │
+                  │  Tool Gateway        │
+                  │  Input Validation    │
+                  │  Order Services      │
+                  │  Price Calculation   │
+                  └──────────┬───────────┘
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │ Supabase PostgreSQL  │
+                  │                      │
+                  │ Restaurants          │
+                  │ Menu Items            │
+                  │ Order Quotes          │
+                  │ Orders                │
+                  │ Order Items           │
+                  └──────────────────────┘
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │  Kitchen Dashboard   │
+                  │   Planned Frontend   │
+                  └──────────────────────┘
 ```
 
-The menu repository is injected into `createApp` during tests. Therefore tests do not need a Supabase account, network access, or credentials. In the real server, the repository lazily creates the Supabase client when a menu request is made; `server.ts` still validates that the required Supabase configuration exists during startup.
+### Architecture Principles
 
-## Prerequisites
+* The backend is the source of truth for prices and availability.
+* The AI agent interprets requests but does not determine authoritative prices.
+* Order creation is performed by the backend, not directly by the language model.
+* Database transactions protect the consistency of orders and order items.
+* Idempotency helps make order-placement retries safe.
+* Sensitive database credentials remain on the server.
 
-- Node.js 20 or newer
-- npm
-- A Supabase project for using the live menu API
+---
 
-## Install
+## 🛠️ Technology Stack
 
-```bash
-npm install
+| Component            | Technology              | Purpose                            |
+| -------------------- | ----------------------- | ---------------------------------- |
+| Runtime              | Node.js                 | Backend execution                  |
+| Language             | TypeScript              | Type-safe application development  |
+| Web framework        | Express.js              | HTTP API and middleware            |
+| Validation           | Zod                     | Request and environment validation |
+| Database             | Supabase PostgreSQL     | Persistent application data        |
+| Database client      | Supabase JavaScript SDK | Backend database access            |
+| Voice AI integration | Bolna                   | Conversational phone ordering      |
+| Testing              | Vitest                  | Automated tests                    |
+| HTTP testing         | Supertest               | API testing                        |
+| Frontend             | Next.js + TypeScript    | Planned kitchen dashboard          |
+| Styling              | Tailwind CSS            | Planned dashboard styling          |
+
+---
+
+## 🔌 Backend API
+
+The backend exposes REST endpoints for health checks, menu access, order quotation, order creation, and voice-agent tool execution.
+
+### Base URL
+
+Local development:
+
+```text
+http://localhost:3000
 ```
 
-## Configure Supabase and environment variables
+### 1. Health Check
 
-1. Create a project in the [Supabase Dashboard](https://supabase.com/dashboard).
-2. In **Project Settings → API**, copy the project URL and the `service_role` key. Do not share the key in chat or commit it.
-3. Copy the safe template and fill only your local `.env` file:
+**Endpoint**
 
-```powershell
-Copy-Item .env.example .env
+```http
+GET /api/health
 ```
 
-```dotenv
-PORT=3000
-NODE_ENV=development
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-server-only-service-role-key
-```
-
-`.env.example` documents variable names with placeholders and is safe to commit. `.env` contains your real local configuration and is ignored by Git.
-
-`SUPABASE_SERVICE_ROLE_KEY` is a sensitive server-only credential. It bypasses Supabase Row Level Security and must never appear in browser code, a Bolna client configuration, logs, source control, or API responses.
-
-### Enable the voice-tool gateway
-
-The gateway is disabled by default so ordinary local API tests do not require a Bolna credential. Before publicly deploying it, generate a strong random secret, store it only in the server environment, and enable the gateway:
-
-```powershell
-node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
-```
-
-```dotenv
-TOOL_GATEWAY_ENABLED=true
-BOLNA_TOOL_GATEWAY_SECRET=the-random-value-generated-above
-```
-
-When enabled, startup validates that the secret is at least 32 characters. The server does not print it. This is an **inbound gateway credential**, not a Bolna management/API credential: it authorizes Bolna's configured HTTP function to call this backend; it cannot create or manage Bolna agents.
-
-When the gateway is enabled, direct `POST /api/orders/quote` and `POST /api/orders` return 404. This prevents a public deployment from exposing quote capabilities or order creation beside the authenticated gateway. Public menu reads remain available for this MVP.
-
-## Create the database schema and demo data
-
-This project supplies SQL files but does not execute them automatically. No Supabase project was available to this project when the files were created.
-
-In the Supabase Dashboard, open **SQL Editor → New query**. Run these files in order by copying each file's complete contents:
-
-1. `supabase/migrations/20261021180000_create_restaurants_and_menu_items.sql`
-2. `supabase/seed.sql`
-3. `supabase/migrations/20261021202000_create_order_confirmation_and_orders.sql`
-4. `supabase/migrations/20261021230000_harden_order_rpc_and_rls.sql`
-
-The first migration uses `create table if not exists` and `create index if not exists`; it only creates missing objects. The seed uses fixed UUIDs with `on conflict do nothing`, so it can be run again without creating duplicates or overwriting existing seeded records. The Phase 7 migration is forward-only: apply it after Phase 4, and do not edit or re-run older migrations merely because their application status is uncertain.
-
-### Safe Supabase verification procedure
-
-Use a **staging** project. Before any write, identify it through your team's deployment/configuration records; this repository cannot determine whether an arbitrary Supabase URL is staging or production. Never paste a service-role key, database password, confirmation token, or full connection string into chat, shell history, or source control.
-
-After applying the four files above through the Supabase SQL Editor or your approved migration workflow, use these read-only SQL checks in the SQL Editor:
-
-```sql
-select to_regclass('public.restaurants'), to_regclass('public.menu_items'),
-       to_regclass('public.order_quotes'), to_regclass('public.orders'),
-       to_regclass('public.order_items');
-
-select tablename, rowsecurity
-from pg_tables
-where schemaname = 'public'
-  and tablename in ('order_quotes', 'orders', 'order_items')
-order by tablename;
-
-select p.proname, pg_get_function_arguments(p.oid) as arguments,
-       p.prosecdef as security_definer
-from pg_proc p
-join pg_namespace n on n.oid = p.pronamespace
-where n.nspname = 'public' and p.proname = 'create_confirmed_order';
-
-select grantee, privilege_type
-from information_schema.routine_privileges
-where routine_schema = 'public' and routine_name = 'create_confirmed_order'
-order by grantee, privilege_type;
-```
-
-Expected results: all five tables exist; RLS is enabled on the three order-owned tables; the function has five arguments and `security_definer = true`; `service_role` is the only application role granted `EXECUTE`. Confirm function ownership in your Supabase dashboard or with an administrator-approved catalog query before production use.
-
-For staging writes, use the backend/tool gateway—not ad-hoc client SQL—to create a quote and then an explicitly confirmed order. Keep the confirmation token in a secure test client. Verify only the returned order ID with:
-
-```sql
-select id, restaurant_id, quote_id, status, total_amount, currency, created_at
-from public.orders
-where id = '<returned-order-id>';
-
-select menu_item_id, item_name, quantity, unit_price, line_total, line_number
-from public.order_items
-where order_id = '<returned-order-id>'
-order by line_number;
-```
-
-Retry the identical order request with the same idempotency key and confirm that the API returns the same order ID with a replay result. For rollback/concurrency testing, use a disposable staging project and an approved integration test that deliberately causes a controlled item-write failure; mocked tests cannot prove PostgreSQL transaction rollback.
-
-The complete staging test matrix, including expired/consumed quotes, price changes, concurrent retries, rollback, and RPC-permission checks, is in [docs/supabase-staging-verification.md](docs/supabase-staging-verification.md).
-
-For Phase 8, use [docs/phase-8-staging-verification.md](docs/phase-8-staging-verification.md) before linking a staging project, inspecting migration history, applying any SQL, or executing quote/order writes. It separates read-only inspection from approval-required changes.
-
-Verification status is deliberately separated:
-
-| Level | Current status |
-| --- | --- |
-| Static SQL/code review | Completed locally |
-| Local isolated automated tests | Completed locally |
-| Live Supabase reads | Not verified: no configured credentials/environment |
-| Live Supabase writes | Not verified and not attempted |
-| Transaction/concurrency verification | Not verified against PostgreSQL |
-
-### Schema
-
-`restaurants` represents a restaurant location:
-
-| Field | Meaning |
-| --- | --- |
-| `id` | UUID primary key. |
-| `name` | Required restaurant name. |
-| `phone`, `address` | Optional contact/location information. |
-| `is_open` | Operational-state flag, defaulting to `true`. |
-| `created_at`, `updated_at` | Insert timestamps. |
-
-`menu_items` contains items that belong to a restaurant:
-
-| Field | Meaning |
-| --- | --- |
-| `id` | UUID primary key. |
-| `restaurant_id` | Required foreign key to `restaurants.id`. |
-| `name`, `category` | Required customer-facing menu fields. |
-| `description` | Optional customer-facing text. |
-| `price` | `numeric(12,2)`, required and constrained to be nonnegative. |
-| `is_available` | Whether the item can currently be ordered. |
-| `allergens` | JSONB array of allergen strings, defaulting to `[]`. |
-| `created_at`, `updated_at` | Insert timestamps. |
-
-The migration adds an index for `restaurant_id` and a partial index for available items ordered by category and name. `updated_at` gets its value on insert through its default; there is no trigger because Phase 2 performs no writes. A later write phase must update it explicitly or introduce a carefully reviewed trigger.
-
-`supabase/seed.sql` provides ten **demo-only** Spice Garden items. Its prices are explicit sample data, not price claims for a real restaurant. Garlic Naan is intentionally unavailable, so it will not appear in either menu endpoint.
-
-## Run the backend
-
-```bash
-npm run dev
-```
-
-The production workflow is:
-
-```bash
-npm run build
-npm start
-```
-
-If either Supabase variable is missing or malformed, the production server exits clearly at startup. Creating the client validates configuration but does not test a database connection, so `/api/health` retains its Phase 1 meaning.
-
-## API
-
-### `GET /api/health`
-
-Returns HTTP `200` when the backend is running. It does not test Supabase.
-
-### `GET /api/menu`
-
-Returns all available menu items, ordered by category and then name. Phase 2 seeds one restaurant (Spice Garden) and does not yet expose restaurant selection; the response includes `restaurantId` so multi-restaurant routing can be added later without changing each item shape.
-
-```powershell
-Invoke-RestMethod http://localhost:3000/api/menu
-```
+Checks whether the backend is running.
 
 Example response:
 
 ```json
 {
-  "data": [
-    {
-      "id": "00000000-0000-4000-8000-000000000108",
-      "restaurantId": "00000000-0000-4000-8000-000000000001",
-      "name": "Mango Lassi",
-      "description": "Chilled yogurt drink blended with mango",
-      "price": "110.00",
-      "category": "Beverages",
-      "isAvailable": true,
-      "allergens": ["dairy"]
-    }
-  ]
+  "status": "ok",
+  "message": "Call2Kitchen backend is running"
 }
 ```
 
-Prices are JSON strings. This avoids treating currency as a floating-point value. If Supabase returns its `NUMERIC(12,2)` value as a JavaScript number, the repository converts it back to a two-decimal string before returning it.
+### 2. List Menu Items
 
-### `GET /api/menu/:id`
+**Endpoint**
 
-Returns one available menu item by UUID:
-
-```powershell
-Invoke-RestMethod http://localhost:3000/api/menu/00000000-0000-4000-8000-000000000103
+```http
+GET /api/menu
 ```
 
-- Invalid UUID: HTTP `400`
-- Missing or unavailable item: HTTP `404`
-- Database failure: HTTP `500` with a generic error; no raw database detail is returned
+Returns available menu items from the database.
 
-All errors use this structure:
+### 3. Get a Menu Item
 
-```json
-{
-  "error": {
-    "message": "Menu item not found",
-    "statusCode": 404
-  }
-}
+**Endpoint**
+
+```http
+GET /api/menu/:id
 ```
 
-### `POST /api/orders/quote`
+Retrieves a menu item by its UUID. Unavailable items are not exposed through this lookup.
 
-Creates an informational, read-only quote. It does not insert an order, change inventory, reserve an item, or promise that an eventual order will still be valid. Order creation must revalidate the menu later.
+### 4. Generate an Order Quote
 
-```powershell
-$body = @{
-  items = @(
-    @{ menuItemId = "00000000-0000-4000-8000-000000000103"; quantity = 2 }
-    @{ menuItemId = "00000000-0000-4000-8000-000000000104"; quantity = 4 }
-  )
-} | ConvertTo-Json
+**Endpoint**
 
-Invoke-RestMethod http://localhost:3000/api/orders/quote -Method Post -ContentType "application/json" -Body $body
+```http
+POST /api/orders/quote
 ```
 
-Request contract:
+Accepts menu item IDs and quantities.
+
+Example request:
 
 ```json
 {
   "items": [
     {
+      "menuItemId": "00000000-0000-4000-8000-000000000101",
+      "quantity": 2
+    },
+    {
       "menuItemId": "00000000-0000-4000-8000-000000000103",
+      "quantity": 1
+    }
+  ]
+}
+```
+
+The backend validates the request, retrieves trusted menu data, and calculates the order total.
+
+A successful response includes a quote identifier, confirmation token, expiration information, and calculated totals.
+
+**The quote does not place an order.**
+
+### 5. Create a Confirmed Order
+
+**Endpoint**
+
+```http
+POST /api/orders
+```
+
+Accepts a valid server-generated quote and the associated confirmation details.
+
+Example request shape:
+
+```json
+{
+  "quoteId": "<quote-id>",
+  "confirmationToken": "<confirmation-token>",
+  "idempotencyKey": "<unique-request-key>",
+  "items": [
+    {
+      "menuItemId": "00000000-0000-4000-8000-000000000101",
       "quantity": 2
     }
   ]
 }
 ```
 
-Successful response:
+The backend validates the quote, verifies the submitted request, and delegates atomic order creation to PostgreSQL.
 
-```json
-{
-  "data": {
-    "items": [
-      {
-        "menuItemId": "00000000-0000-4000-8000-000000000103",
-        "name": "Paneer Butter Masala",
-        "quantity": 2,
-        "unitPrice": "260.00",
-        "lineTotal": "520.00"
-      }
-    ],
-    "totalAmount": "520.00",
-    "currency": "INR"
-  }
-}
+The application should invoke this operation only after explicit customer confirmation has been obtained by the voice-agent workflow.
+
+### 6. Voice-Agent Tool Gateway
+
+**Endpoint**
+
+```http
+POST /api/tools/:toolName
 ```
 
-Validation rules:
+Supported tools:
 
-- `items` is required, must be nonempty, and may contain at most 20 distinct items.
-- Each item has exactly `menuItemId` and `quantity`; extra properties such as a client-provided `price` are rejected.
-- Each ID must be a UUID, duplicate IDs are rejected, and quantity must be an integer from 1 through 50.
-- Every requested item must exist in trusted database data and currently be available.
-- Missing or unavailable items return HTTP `400`; malformed requests return HTTP `400`; unexpected database failures return a generic HTTP `500`.
+| Tool               | Purpose                                                      |
+| ------------------ | ------------------------------------------------------------ |
+| `get_menu`         | Retrieve the available menu                                  |
+| `get_item_details` | Retrieve details for a menu item                             |
+| `quote_order`      | Validate items and generate a quote                          |
+| `place_order`      | Create an order using a valid quote and confirmation details |
 
-The quote service fetches all requested IDs in one database query. It parses trusted two-decimal price strings into integer paise using `BigInt`, multiplies and adds paise exactly, then formats response values such as `"520.00"`. It never accepts a request price or uses JavaScript floating-point arithmetic for money.
+The gateway requires bearer-secret authentication and must be enabled through server configuration.
 
-Each successful quote now also returns `quoteId`, `confirmationToken`, and `expiresAt`. The token is a cryptographically random, five-minute, single-use capability stored only as a SHA-256 hash in `order_quotes`. It must be retained only by the trusted server-side voice orchestration flow and submitted only after the customer explicitly confirms the final spoken summary.
-
-### `POST /api/orders`
-
-This endpoint creates an order only from a still-valid, confirmed quote:
-
-```json
-{
-  "quoteId": "quote-uuid",
-  "confirmationToken": "server-generated-token-from-the-quote",
-  "idempotencyKey": "a-stable-unique-key-for-this-submission",
-  "items": [
-    {
-      "menuItemId": "00000000-0000-4000-8000-000000000103",
-      "quantity": 2
-    }
-  ]
-}
-```
-
-The body is strict: extra properties such as `price`, `totalAmount`, `name`, `restaurantId`, or `confirmed` are rejected. The server does not trust a client boolean as customer confirmation.
-
-The `create_confirmed_order` PostgreSQL RPC locks the quote and, in one transaction:
-
-1. Checks the token hash, expiration, and one-time-use state.
-2. Checks that request items exactly match the quoted items.
-3. Retrieves current menu data from the quote's restaurant.
-4. Rejects missing, unavailable, changed-price, or changed-name items.
-5. Inserts `orders` and `order_items` snapshots.
-6. Marks the quote consumed.
-
-It returns HTTP `201` for a new order and HTTP `200` for a safe retry with the same idempotency key and identical request content. Reusing a key with different content returns HTTP `409`.
-
-`orders` stores the restaurant, quote reference, status (`NEW`), exact total, currency, idempotency key, and request hash. `order_items` snapshots the trusted item name and price, so historical orders remain meaningful when the menu changes.
-
-The RPC is `SECURITY DEFINER` with a safe search path. Its execute permission is revoked from public/anonymous/authenticated roles and granted only to `service_role`; it must never be called from browser code.
-
-Important limitation: the token proves that this API call refers to a specific, server-created quote. Without an authenticated Bolna webhook or user-facing confirmation channel, the backend cannot independently prove a human uttered “yes.” The trusted voice orchestration component must enforce that conversational step before presenting the token to this endpoint.
-
-### `POST /api/tools/:toolName`
-
-This is the only endpoint intended for an externally hosted voice tool after `TOOL_GATEWAY_ENABLED=true`. Valid tool names are `get_menu`, `get_item_details`, `quote_order`, and `place_order`. It is a fixed allow-list, not an HTTP proxy.
-
-Each request must include the server-configured secret as an HTTP header:
+Example request headers:
 
 ```http
 Authorization: Bearer <BOLNA_TOOL_GATEWAY_SECRET>
 Content-Type: application/json
 ```
 
-The JSON body is the tool's exact arguments. The gateway allows at most 16 KB and validates all input with the same strict Zod schemas used by the existing quote/order routes.
+Example request:
 
-| Tool | Request body | Trusted behavior |
-| --- | --- | --- |
-| `get_menu` | `{}` | Returns currently available menu records. |
-| `get_item_details` | `{ "menuItemId": "uuid" }` | Returns one currently available item or 404. |
-| `quote_order` | `{ "items": [{ "menuItemId": "uuid", "quantity": 2 }] }` | Creates the same stored quote, trusted total, token, and expiry as Phase 3/4. |
-| `place_order` | Exact Phase 4 order body | Uses the same confirmation, revalidation, idempotency, and RPC persistence path. |
-
-Successful gateway responses are wrapped separately from regular APIs so a tool can identify its dispatch result:
-
-```json
-{
-  "success": true,
-  "tool": "get_menu",
-  "data": { "items": [] }
-}
+```http
+POST /api/tools/get_menu
 ```
 
-Failed requests use the existing safe error structure, for example `401` for missing/incorrect credentials or `400` for invalid arguments. The response never includes a secret, SQL statement, database credential, or stack trace. A gateway timeout never means an order failed to persist: retry `place_order` only with the **same** idempotency key and request body.
+```json
+{}
+```
 
-## Test and build
+**Production requirement:** Expose the gateway only over HTTPS, protect the shared secret, and configure the Bolna agent to call the deployed backend URL.
+
+> **Note:** Order-listing and status-update endpoints should be documented here once implemented and verified. The initial backend implementation should not be assumed to provide these operations merely because they are part of the planned kitchen workflow.
+
+---
+
+## 🗄️ Database Design
+
+Call2Kitchen uses Supabase PostgreSQL for persistent data.
+
+### Tables
+
+| Table          | Responsibility                                        |
+| -------------- | ----------------------------------------------------- |
+| `restaurants`  | Restaurant information and operating status           |
+| `menu_items`   | Menu item names, prices, categories, and availability |
+| `order_quotes` | Server-generated quotes and confirmation metadata     |
+| `orders`       | Persisted customer orders and order totals            |
+| `order_items`  | Order line items with price and item snapshots        |
+
+### Order Processing
+
+The intended order lifecycle is:
+
+```text
+Customer Request
+       │
+       ▼
+Menu Validation
+       │
+       ▼
+Server-Generated Quote
+       │
+       ▼
+Explicit Customer Confirmation
+       │
+       ▼
+Atomic Order Creation
+       │
+       ▼
+Persisted Order
+```
+
+### Database Migrations
+
+The repository includes these migrations:
+
+```text
+supabase/
+├── migrations/
+│   ├── 20261021180000_create_restaurants_and_menu_items.sql
+│   ├── 20261021202000_create_order_confirmation_and_orders.sql
+│   └── 20261021230000_harden_order_rpc_and_rls.sql
+└── seed.sql
+```
+
+The migrations establish the menu schema, order and confirmation structures, and additional database safeguards.
+
+The seed file supplies demo restaurant and menu data for development.
+
+---
+
+## 🔐 Security and Reliability
+
+Security is an important part of the ordering workflow because an incorrect or duplicated order can affect real restaurant operations.
+
+### Server-Side Validation
+
+* Requests are validated using Zod schemas.
+* Menu item identifiers and quantities are checked.
+* Duplicate item IDs and unexpected input properties are rejected where required.
+* Prices are retrieved from the database rather than trusted from client input.
+
+### Order Integrity
+
+* Quotes have limited validity periods.
+* Confirmation tokens are stored and validated through server-side logic.
+* PostgreSQL handles critical order persistence atomically.
+* Idempotency keys support safe retries.
+* Reusing an idempotency key with conflicting request content is rejected.
+
+### Credential Protection
+
+* The Supabase service-role key must remain on the backend.
+* `.env` is excluded from Git.
+* `.sf/`, `node_modules/`, and `dist/` are also excluded.
+* The voice-agent gateway uses a server-side shared secret.
+
+### Important Production Considerations
+
+Before production deployment:
+
+* Enable and verify Row Level Security on relevant database tables.
+* Verify database grants and policies in the deployed Supabase project.
+* Keep the service-role key out of all frontend bundles.
+* Use HTTPS for all external API traffic.
+* Configure gateway authentication and appropriate rate limiting.
+* Verify the complete order lifecycle against a staging database.
+* Test concurrent requests, retries, expired quotes, and invalid confirmation tokens.
+* Never report an order as placed without a successful backend response.
+
+---
+
+## 📁 Project Structure
+
+```text
+project-call2kitchen-phase-1-backend-foundation/
+│
+├── docs/
+│   ├── bolna-agent-setup.md
+│   ├── phase-8-staging-verification.md
+│   └── supabase-staging-verification.md
+│
+├── src/
+│   ├── errors/
+│   ├── lib/
+│   ├── menu/
+│   ├── middleware/
+│   ├── orders/
+│   ├── routes/
+│   ├── tools/
+│   ├── app.ts
+│   └── server.ts
+│
+├── supabase/
+│   ├── migrations/
+│   └── seed.sql
+│
+├── tests/
+│
+├── .gitignore
+├── package.json
+├── package-lock.json
+├── tsconfig.json
+└── README.md
+```
+
+### Directory Responsibilities
+
+* `src/routes/` — HTTP route definitions.
+* `src/menu/` — Menu data access and related types.
+* `src/orders/` — Quote and order validation, business logic, and persistence.
+* `src/tools/` — Voice-agent tool gateway implementation.
+* `src/middleware/` — Authentication, request handling, and error middleware.
+* `src/lib/` — Shared infrastructure, configuration, and Supabase integration.
+* `supabase/migrations/` — Database schema and security migrations.
+* `supabase/seed.sql` — Demo data.
+* `tests/` — Automated application and migration-related tests.
+* `docs/` — Integration and staging verification instructions.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+Install the following:
+
+* Node.js with npm.
+* Git.
+* A Supabase project.
+* A code editor such as Visual Studio Code.
+* Bolna access for voice-agent integration.
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/Shreyans-704/Call2Kitchen.git
+cd Call2Kitchen
+```
+
+### 2. Install Dependencies
+
+```bash
+npm install
+```
+
+### 3. Configure Environment Variables
+
+Create a `.env` file in the backend root directory.
+
+Use the environment variables described in the next section.
+
+Never commit this file or share its secret values publicly.
+
+### 4. Configure Supabase
+
+Apply the database migrations in the correct order and seed the database if required.
+
+See the [Database Setup](#-database-setup) section.
+
+### 5. Start the Development Server
+
+```bash
+npm run dev
+```
+
+The backend is configured to listen on port `3000` by default.
+
+### 6. Verify the Server
+
+Open the following endpoint in a browser or API client:
+
+```text
+http://localhost:3000/api/health
+```
+
+You should receive a successful health-check response.
+
+### 7. Verify Menu Access
+
+Send a GET request to:
+
+```text
+http://localhost:3000/api/menu
+```
+
+If the Supabase configuration and database are correct, the backend should return the available menu items.
+
+---
+
+## ⚙️ Environment Variables
+
+Configure the following variables in your local `.env` file.
+
+| Variable                    | Purpose                                             |
+| --------------------------- | --------------------------------------------------- |
+| `NODE_ENV`                  | Application environment                             |
+| `PORT`                      | Backend listening port                              |
+| `SUPABASE_URL`              | Supabase project URL                                |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-side Supabase service-role key               |
+| `TOOL_GATEWAY_ENABLED`      | Enables the authenticated tool gateway              |
+| `BOLNA_TOOL_GATEWAY_SECRET` | Shared secret used to authenticate gateway requests |
+
+Example configuration with placeholder values:
+
+```dotenv
+NODE_ENV=development
+PORT=3000
+
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+TOOL_GATEWAY_ENABLED=true
+BOLNA_TOOL_GATEWAY_SECRET=replace-with-a-long-random-secret
+```
+
+Replace the placeholders with your actual configuration.
+
+**Never commit real credentials to GitHub.**
+
+When gateway mode is enabled, the gateway requires the configured bearer secret, and the direct quote and order routes are disabled by the corresponding middleware.
+
+---
+
+## 🗃️ Database Setup
+
+The backend expects the database schema and functions defined by its SQL migrations.
+
+Apply these migrations in order:
+
+### Migration 1 — Restaurants and Menu
+
+```text
+20261021180000_create_restaurants_and_menu_items.sql
+```
+
+Creates the initial restaurant and menu schema.
+
+### Migration 2 — Orders and Confirmation
+
+```text
+20261021202000_create_order_confirmation_and_orders.sql
+```
+
+Introduces the quote and order persistence structures and the database order-creation function.
+
+### Migration 3 — RPC Hardening and RLS
+
+```text
+20261021230000_harden_order_rpc_and_rls.sql
+```
+
+Adds database-side validation and access-control safeguards.
+
+### Seed Data
+
+```text
+supabase/seed.sql
+```
+
+Provides the demo restaurant and menu items.
+
+The migrations and seed data can be executed through the Supabase SQL Editor or through an appropriately configured migration workflow.
+
+**Important:** Check which migrations have already been applied before executing them against an existing database. Do not blindly rerun schema-changing SQL against a production database.
+
+After setup, verify:
+
+* All expected tables exist.
+* The demo restaurant exists.
+* Menu items have the expected prices and availability.
+* Row Level Security and database grants match the intended security model.
+* The order-creation RPC is present and has the expected permissions.
+
+Additional verification instructions are available in:
+
+* `docs/supabase-staging-verification.md`
+* `docs/phase-8-staging-verification.md`
+
+---
+
+## 🧪 Testing
+
+Run the available automated tests with:
 
 ```bash
 npm test
+```
+
+Run the TypeScript build:
+
+```bash
 npm run build
 ```
 
-Tests use an injected in-memory repository rather than live credentials. They cover the Phase 1 health endpoint, menu response contract, available-only filtering, detail retrieval, quote validation, exact money totals, safe database failure responses, and the fact that quotation has no order-creation operation.
+Run targeted tests:
 
-## Troubleshooting
+```bash
+npx vitest run tests/order.service.test.ts tests/order-rpc.migration.test.ts tests/tool-gateway.service.test.ts
+```
 
-| Problem | What to check |
-| --- | --- |
-| `Supabase configuration is missing or invalid` | Create `.env`, ensure `SUPABASE_URL` is a URL, and supply a nonempty server-side service-role key. |
-| Menu endpoint returns HTTP 500 | Confirm both SQL files were run in order, credentials are for the intended project, and inspect server logs—not API output—for the underlying error. |
-| Menu endpoint returns `data: []` | Confirm the seed ran and items have `is_available = true`. |
-| Menu item returns 404 | Confirm the UUID is valid and the item is available; unavailable items are deliberately hidden. |
+The project includes tests covering health checks, menu behavior, order services, quote behavior, and tool-gateway functionality.
 
-## Security precautions
+Some HTTP tests may require permission to bind a local port. If the environment prevents localhost binding, those tests may fail before reaching their assertions.
 
-- Never commit `.env` or put real keys in documentation.
-- Never expose the Supabase service-role key to a browser, phone client, or public response.
-- Do not copy raw database errors into API responses.
-- Do not treat the voice model as the source of prices; later ordering logic must query trusted database data.
+A successful TypeScript build or unit-test run does not by itself prove that the deployed Supabase database, Bolna integration, or complete phone-ordering workflow works end to end.
 
-## Bolna voice-agent preparation
+---
 
-The complete Phase 5 prompt, tool schemas, existing API contracts, manual dashboard steps, and verification status are in `docs/bolna-agent-setup.md`.
+## 🚧 Current Development Status
 
-Bolna officially supports Custom Functions that call external APIs using OpenAI-style function definitions and configurable request headers. Configure the four functions only against `POST https://your-backend.example/api/tools/<tool-name>` with the bearer header above—not against `/api/orders/*`. Complete field-by-field setup, schemas, rotation instructions, and verification status are in [docs/bolna-agent-setup.md](docs/bolna-agent-setup.md). [Bolna Custom Functions documentation](https://www.bolna.ai/docs/tool-calling/custom-function-calls) describes the dashboard setup and tool schema format.
+The current repository contains the backend foundation for Call2Kitchen.
 
-## Implemented and deferred work
+| Component                           | Status                |
+| ----------------------------------- | --------------------- |
+| Node.js and Express backend         | Implemented           |
+| TypeScript configuration            | Implemented           |
+| Health-check endpoint               | Implemented           |
+| Supabase integration                | Implemented           |
+| Menu API                            | Implemented           |
+| Order quotation service             | Implemented           |
+| Order creation service              | Implemented           |
+| PostgreSQL order persistence RPC    | Implemented           |
+| Idempotency and quote validation    | Implemented           |
+| Authenticated tool gateway          | Implemented           |
+| Bolna integration documentation     | Available             |
+| Supabase migrations and seed data   | Available             |
+| Kitchen dashboard frontend          | Planned               |
+| End-to-end live phone-order testing | Requires verification |
 
-Implemented: the Phase 1 foundation, Supabase schema/seed files, menu APIs, persisted expiring quotes, transactional confirmed-order creation, and a locally tested authenticated tool-gateway adapter.
+The presence of backend code and database migrations should not be interpreted as proof that every production integration has been fully tested.
 
-Deferred: a configured Bolna agent, live tool calls, webhook authentication, human-identity confirmation, customer/session identity, restaurant selection, menu administration, remote Phase 4 migration/RPC verification, and the kitchen dashboard.
+---
+
+## 🗺️ Roadmap
+
+### Phase 1 — Backend Foundation
+
+* [x] Node.js, Express, and TypeScript setup.
+* [x] Environment configuration.
+* [x] Health-check endpoint.
+* [x] Automated testing foundation.
+
+### Phase 2 — Menu Integration
+
+* [x] Supabase client integration.
+* [x] Restaurant and menu schema.
+* [x] Menu API.
+* [x] Demo seed data.
+
+### Phase 3 — Order Quotation
+
+* [x] Input validation.
+* [x] Availability checks.
+* [x] Trusted database pricing.
+* [x] Exact money arithmetic.
+
+### Phase 4 — Order Persistence
+
+* [x] Quote confirmation data.
+* [x] Atomic order creation.
+* [x] Order item snapshots.
+* [x] Idempotency handling.
+* [x] Database-side validation.
+
+### Phase 5 — Voice-Agent Integration Preparation
+
+* [x] Bolna tool definitions and setup documentation.
+* [x] Order conversation workflow documentation.
+* [ ] Complete live voice-agent integration and verification.
+
+### Phase 6 — Tool Gateway
+
+* [x] Authenticated gateway.
+* [x] Allow-listed tools.
+* [x] Strict request validation.
+* [ ] Live Bolna gateway verification.
+
+### Phase 7 — Database Hardening
+
+* [x] Additional RPC validation.
+* [x] RLS hardening migration.
+* [x] Staging verification documentation.
+* [ ] Verify all deployed database policies and permissions.
+
+### Phase 8 — Kitchen Dashboard
+
+* [ ] Build the Next.js dashboard.
+* [ ] Display persisted orders.
+* [ ] Implement order-status management.
+* [ ] Add menu-management views.
+* [ ] Integrate live updates.
+* [ ] Test the complete kitchen workflow.
+
+### Phase 9 — Production Readiness
+
+* [ ] Deploy the backend.
+* [ ] Configure secure production environment variables.
+* [ ] Complete end-to-end order testing.
+* [ ] Add appropriate monitoring, logging, and rate limiting.
+* [ ] Verify failure handling and recovery.
+
+---
+
+## 🎯 Project Goal
+
+Call2Kitchen aims to bridge conversational AI and real-world restaurant operations through a system that is easy to use and reliable at the point where it matters most: the actual order.
+
+The project emphasizes clear separation of responsibilities, trusted pricing, server-side validation, safe persistence, and a foundation for real-time kitchen operations.
+
+**AI handles the conversation. The backend protects the order.**
+
+---
+
+## 👨‍💻 Repository
+
+GitHub: https://github.com/Shreyans-704/Call2Kitchen
+
+Built with Node.js, TypeScript, Express, Supabase, and Bolna integration in mind.

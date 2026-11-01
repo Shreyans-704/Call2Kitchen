@@ -150,6 +150,57 @@ The gateway waits up to eight seconds for an operation. If `place_order` times o
 
 The backend disables its direct `POST /api/orders/quote` and `POST /api/orders` routes when `TOOL_GATEWAY_ENABLED=true`; public `GET /api/menu` remains separate. This limits public ordering access to authenticated tool requests. It is still a shared-secret boundary: anyone who obtains the credential can call tools, so use HTTPS, rotate on exposure, restrict access in deployment infrastructure, and consider a future signed/request-bound integration.
 
+## Browser voice session endpoint (Phase B1)
+
+The frontend now connects to a real Bolna voice agent through the backend:
+
+Browser `-->` `POST /api/bolna-session` (Express backend) `-->` `POST https://api.bolna.ai/web-call/freeswitch-session` (Bolna)
+
+The backend session endpoint mints a short-lived WebRTC session through the
+Bolna Web Call minting API using server-side credentials and returns the
+session response to the browser SDK as-is.
+
+### Server-side environment variables
+
+- `BOLNA_API_KEY` — server-only Bolna API key used for session minting. Never exposed to the browser, logged, or returned.
+- `BOLNA_AGENT_ID` — server-only Bolna agent ID used for session minting.
+
+Both are required for the endpoint to mint sessions. When either is missing,
+`POST /api/bolna-session` returns HTTP 503 and never echoes configuration values.
+
+The frontend never receives or stores Bolna credentials; it calls
+`POST /api/bolna-session` against the backend base URL configured through
+`NEXT_PUBLIC_API_URL` (default `http://localhost:3000`).
+
+### Endpoint behavior
+
+- `POST /api/bolna-session` → `200` with the short-lived session response returned by Bolna.
+- Upstream non-success → `502`; upstream response missing required session fields → `502`; upstream timeout → `504`.
+- Missing server-side configuration → `503`.
+- Abuse protection: in-memory per-IP rate limit (10 mint attempts per 60 seconds per client) → `429`.
+
+The success response body is forwarded to the browser exactly as Bolna returned
+it, as required by the Web Call SDK session contract (`run_id`, `wss_url`,
+`sip_username`, SIP credentials, ICE servers).
+
+### Security controls
+
+- The Bolna API key and session credentials stay server-side; the browser only
+  receives short-lived session credentials.
+- CORS allow-lists configured frontend origins (default `http://localhost:3001`;
+  override with `CORS_ALLOWED_ORIGINS`).
+- Generic error responses; configuration values are never included in errors.
+
+### Current authentication boundary
+
+The application does not yet have a browser-user authentication mechanism. The
+existing authenticated surface is the server-to-server tool gateway shared
+secret (`BOLNA_TOOL_GATEWAY_SECRET`). Until browser user authentication exists,
+treat `POST /api/bolna-session` as an internal/trusted-origin surface: use HTTPS,
+restrict deployment network access, and add real user authentication before any
+public production exposure. CORS and rate limiting are transport/abuse controls,
+not authentication.
+
 ## Webhooks
 
 No webhook is implemented. Bolna documents call-status webhooks and optional configured headers, but the currently verified documentation does not establish a signed webhook protocol for this project. Do not create a webhook endpoint that trusts `customer_confirmed: true`. A future webhook requires a documented authentication mechanism, strict Zod payload validation, duplicate-event handling, and replay protection.
@@ -160,6 +211,7 @@ No webhook is implemented. Bolna documents call-status webhooks and optional con
 | --- | --- |
 | Local prompt/tool definitions | Documented only |
 | Authenticated tool gateway | Implemented locally; service-level tests passed |
+| Browser voice session endpoint | Implemented locally; live call not verified |
 | Bolna agent/dashboard setup | Not configured |
 | Bolna API/tool calls | Not verified |
 | Live voice calls/webhooks | Not verified |

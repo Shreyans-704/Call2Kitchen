@@ -32,6 +32,13 @@ export const env = parsedEnvironment.data;
 export type SupabaseEnvironment = z.infer<typeof supabaseEnvironmentSchema>;
 export type ToolGatewayEnvironment = z.infer<typeof toolGatewayEnvironmentSchema>;
 
+const bolnaEnvironmentSchema = z.object({
+  BOLNA_API_KEY: z.string().min(1),
+  BOLNA_AGENT_ID: z.string().min(1)
+});
+
+export type BolnaEnvironment = z.infer<typeof bolnaEnvironmentSchema>;
+
 /**
  * Validates database configuration only when the real server starts or a
  * database-backed request is made. Keeping it separate lets API tests import
@@ -67,4 +74,20 @@ export function getToolGatewayEnvironment(): ToolGatewayEnvironment {
   }
 
   return parsedToolGatewayEnvironment.data;
+}
+
+/**
+ * Validates the server-side Bolna voice configuration. These values are
+ * server-only: the browser-facing session endpoint uses them to mint short-lived
+ * Bolna sessions and never returns them to callers or logs them.
+ */
+export function getBolnaEnvironment(): BolnaEnvironment {
+  const parsedBolnaEnvironment = bolnaEnvironmentSchema.safeParse(process.env);
+
+  if (!parsedBolnaEnvironment.success) {
+    console.error("Invalid Bolna configuration:", parsedBolnaEnvironment.error.flatten().fieldErrors);
+    throw new Error("Bolna configuration is missing or invalid");
+  }
+
+  return parsedBolnaEnvironment.data;
 }

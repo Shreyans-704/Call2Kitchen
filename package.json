@@ -14,6 +14,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@bolna/web-call": "^3.0.1",
     "@supabase/supabase-js": "^2.118.0",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",

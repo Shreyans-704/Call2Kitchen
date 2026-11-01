@@ -1,6 +1,20 @@
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
+// Isolate test configuration from the local .env. The direct quote/order
+// routes are intentionally disabled when TOOL_GATEWAY_ENABLED=true, but the
+// quote test suite must exercise those routes directly. Mock the env module
+// so tests run with the gateway disabled and never depend on the developer's
+// local .env values.
+const testEnv = vi.hoisted(() => ({
+  env: { NODE_ENV: "test", PORT: 3000, TOOL_GATEWAY_ENABLED: false },
+  getSupabaseEnvironment: vi.fn(),
+  getToolGatewayEnvironment: vi.fn(),
+  getBolnaEnvironment: vi.fn(),
+}));
+
+vi.mock("../src/lib/env.js", () => testEnv);
+
 import { createApp } from "../src/app.js";
 import type { MenuItem, MenuRepository } from "../src/menu/menu.types.js";
 import type { QuoteRepository } from "../src/orders/order.types.js";

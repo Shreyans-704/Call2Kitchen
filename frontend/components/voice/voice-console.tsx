@@ -21,7 +21,11 @@ interface VoiceStateConfig {
 }
 
 const STATE_CONFIGS: Record<VoiceState, VoiceStateConfig> = {
-  idle: { label: "Ready to take orders" },
+  idle: { label: "Ready to take orders", subLabel: "Tap the microphone to start" },
+  connecting: {
+    label: "Connecting…",
+    subLabel: "Allow microphone access if your browser asks",
+  },
   incoming: { label: "Incoming order" },
   listening: { label: "Listening…" },
   processing: { label: "Processing request" },
@@ -42,8 +46,8 @@ function toVoiceState(state: CallState): VoiceState {
     case "ended":
       return "ended";
     case "connecting":
-      // Session mint + WebRTC negotiation: hold the pre-call UI.
-      return "idle";
+      // Session mint + microphone permission + WebRTC negotiation.
+      return "connecting";
     case "ringing":
       // Microphone is live; the agent has not spoken yet.
       return "listening";
@@ -180,10 +184,13 @@ export function VoiceConsole() {
     callRef.current = call;
 
     const handleStateChange = (next: CallState) => {
-      setState(toVoiceState(next));
-      if (next === "ended") {
-        setShowClose(false);
-      }
+      const nextVoiceState = toVoiceState(next);
+      setState(nextVoiceState);
+      setShowClose(
+        nextVoiceState !== "idle" &&
+          nextVoiceState !== "ended" &&
+          nextVoiceState !== "error",
+      );
     };
 
     const handleCallStart = () => {
@@ -197,6 +204,7 @@ export function VoiceConsole() {
 
     const handleError = (error: CallError) => {
       setState("error");
+      setShowClose(false);
       toast({
         type: "error",
         title: "Voice call",

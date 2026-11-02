@@ -37,6 +37,11 @@ export function AIOrb({
       outer: "rgba(99, 102, 241, 0.18)",
       glow: "rgba(99, 102, 241, 0.35)",
     },
+    connecting: {
+      inner: "rgba(255, 255, 255, 0.14)",
+      outer: "rgba(99, 102, 241, 0.30)",
+      glow: "rgba(99, 102, 241, 0.45)",
+    },
     incoming: {
       inner: "rgba(255, 255, 255, 0.16)",
       outer: "rgba(37, 99, 235, 0.30)",
@@ -93,6 +98,7 @@ export function AIOrb({
     React.ComponentProps<typeof motion.div>["animate"]
   > = {
     idle: { scale: [1, 1.02, 1] },
+    connecting: { scale: [1, 1.03, 1] },
     incoming: { scale: [1, 1.04, 1] },
     listening: { scale: [1, 1.05, 1, 1.02, 1] },
     processing: { scale: [1, 1.03, 1] },
@@ -109,6 +115,7 @@ export function AIOrb({
     React.ComponentProps<typeof motion.div>["transition"]
   > = {
     idle: { duration: 6, repeat: Infinity, ease: "easeInOut" },
+    connecting: { duration: 5, repeat: Infinity, ease: "easeInOut" },
     incoming: { duration: 3, repeat: Infinity, ease: "easeInOut" },
     listening: { duration: 4, repeat: Infinity, ease: "easeInOut" },
     processing: { duration: 5, repeat: Infinity, ease: "easeInOut" },
@@ -125,6 +132,7 @@ export function AIOrb({
     React.ComponentProps<typeof motion.div>["animate"]
   > = {
     idle: { opacity: [0.35, 0.55, 0.35] },
+    connecting: { opacity: [0.4, 0.65, 0.4] },
     incoming: { opacity: [0.4, 0.7, 0.4] },
     listening: { opacity: [0.45, 0.75, 0.45, 0.55, 0.45] },
     processing: { opacity: [0.4, 0.65, 0.4] },
@@ -141,6 +149,7 @@ export function AIOrb({
     React.ComponentProps<typeof motion.div>["animate"]
   > = {
     idle: { opacity: [0.35, 0.55, 0.35] },
+    connecting: { opacity: [0.4, 0.65, 0.4] },
     incoming: { opacity: [0.4, 0.75, 0.4] },
     listening: { opacity: [0.45, 0.8, 0.45, 0.6, 0.45] },
     processing: { opacity: [0.4, 0.65, 0.4] },

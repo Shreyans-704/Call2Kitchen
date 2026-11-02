@@ -11,6 +11,7 @@ import { ToolGatewayService, toolNameSchema } from "../src/tools/tool-gateway.se
 
 const restaurantId = "00000000-0000-4000-8000-000000000001";
 const menuItemId = "00000000-0000-4000-8000-000000000103";
+const naanItemId = "00000000-0000-4000-8000-000000000106";
 const quoteId = "00000000-0000-4000-8000-000000000301";
 
 const paneer: MenuItem = {
@@ -24,11 +25,28 @@ const paneer: MenuItem = {
   allergens: ["dairy"]
 };
 
+const naan: MenuItem = {
+  id: naanItemId,
+  restaurantId,
+  name: "Butter Naan",
+  description: "Tandoor-baked flatbread",
+  price: "55.00",
+  category: "Breads",
+  isAvailable: true,
+  allergens: ["gluten", "dairy"]
+};
+
 function createMenuRepository(): MenuRepository {
   return {
-    listAvailable: vi.fn(async () => [paneer]),
-    findAvailableById: vi.fn(async (id) => (id === menuItemId ? paneer : null)),
-    findByIds: vi.fn(async (ids) => (ids.includes(menuItemId) ? [paneer] : []))
+    listAvailable: vi.fn(async () => [paneer, naan]),
+    findAvailableById: vi.fn(async (id) =>
+      id === menuItemId ? paneer : id === naanItemId ? naan : null
+    ),
+    findByIds: vi.fn(async (ids) =>
+      ids
+        .map((id) => (id === menuItemId ? paneer : id === naanItemId ? naan : null))
+        .filter((item): item is MenuItem => item !== null)
+    )
   };
 }
 
@@ -107,7 +125,7 @@ describe("ToolGatewayService", () => {
 
     await expect(service.invoke("get_menu", {})).resolves.toEqual({
       tool: "get_menu",
-      data: { items: [paneer] }
+      data: { items: [paneer, naan] }
     });
     expect(menuRepository.listAvailable).toHaveBeenCalledOnce();
   });
@@ -166,6 +184,68 @@ describe("ToolGatewayService", () => {
     expect(quoteRepository.createQuote).toHaveBeenCalledOnce();
   });
 
+  it("accepts the scalar JSON-string item list used by Bolna custom functions", async () => {
+    const { service, quoteRepository } = createService();
+
+    const result = await service.invoke("quote_order", {
+      items: JSON.stringify([{ menuItemId, quantity: 2 }])
+    });
+
+    expect(result.data).toMatchObject({
+      quoteId,
+      totalAmount: "520.00",
+      currency: "INR"
+    });
+    expect(quoteRepository.createQuote).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the quote-free compact item list used by Bolna custom functions", async () => {
+    const { service, quoteRepository } = createService();
+
+    const result = await service.invoke("quote_order", {
+      items: `${menuItemId}:2, ${naanItemId}:3`
+    });
+
+    expect(result.data).toMatchObject({
+      quoteId,
+      totalAmount: "685.00",
+      currency: "INR"
+    });
+    expect(quoteRepository.createQuote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedItems: [
+          { menuItemId, quantity: 2 },
+          { menuItemId: naanItemId, quantity: 3 }
+        ]
+      })
+    );
+  });
+
+  it("rejects malformed scalar item lists without touching trusted data", async () => {
+    const { service, menuRepository, quoteRepository } = createService();
+
+    await expect(service.invoke("quote_order", { items: "not-json" })).rejects.toMatchObject({
+      statusCode: 400
+    });
+    await expect(service.invoke("quote_order", { items: '{"menuItemId":"x"}' })).rejects.toMatchObject({
+      statusCode: 400
+    });
+    await expect(service.invoke("quote_order", { items: "[]" })).rejects.toMatchObject({
+      statusCode: 400
+    });
+    await expect(
+      service.invoke("quote_order", { items: `${menuItemId}:abc` })
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      service.invoke("quote_order", { items: `${menuItemId}:2:3` })
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(service.invoke("quote_order", { items: `${menuItemId}:2,` })).rejects.toMatchObject({
+      statusCode: 400
+    });
+    expect(menuRepository.findByIds).not.toHaveBeenCalled();
+    expect(quoteRepository.createQuote).not.toHaveBeenCalled();
+  });
+
   it("reuses the order service and does not turn a repository failure into success", async () => {
     const { service, orderRepository } = createService();
     const request = {
@@ -187,6 +267,53 @@ describe("ToolGatewayService", () => {
       { createConfirmedOrder: async () => { throw new AppError("Invalid confirmation token", 400); } }
     );
     await expect(failingService.invoke("place_order", request)).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("accepts the scalar JSON-string item list for place_order", async () => {
+    const { service, orderRepository } = createService();
+
+    await expect(
+      service.invoke("place_order", {
+        quoteId,
+        confirmationToken: "a".repeat(43),
+        idempotencyKey: quoteId,
+        items: JSON.stringify([{ menuItemId, quantity: 2 }])
+      })
+    ).resolves.toMatchObject({
+      tool: "place_order",
+      data: { id: "00000000-0000-4000-8000-000000000401", replayed: false }
+    });
+    expect(orderRepository.createConfirmedOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quoteId,
+        requestedItems: [{ menuItemId, quantity: 2 }]
+      })
+    );
+  });
+
+  it("accepts the quote-free compact item list for place_order", async () => {
+    const { service, orderRepository } = createService();
+
+    await expect(
+      service.invoke("place_order", {
+        quoteId,
+        confirmationToken: "a".repeat(43),
+        idempotencyKey: quoteId,
+        items: `${menuItemId}:2,${naanItemId}:3`
+      })
+    ).resolves.toMatchObject({
+      tool: "place_order",
+      data: { id: "00000000-0000-4000-8000-000000000401", replayed: false }
+    });
+    expect(orderRepository.createConfirmedOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quoteId,
+        requestedItems: [
+          { menuItemId, quantity: 2 },
+          { menuItemId: naanItemId, quantity: 3 }
+        ]
+      })
+    );
   });
 
   it("preserves a safe idempotent replay returned by the existing order repository", async () => {

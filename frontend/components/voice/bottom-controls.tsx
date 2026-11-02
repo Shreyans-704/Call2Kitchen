@@ -28,20 +28,22 @@ export function BottomControls({
   onEndCall,
   microphoneEnabled = true,
 }: BottomControlsProps) {
-  const isActive =
-    state === "listening" ||
-    state === "processing" ||
-    state === "speaking" ||
-    state === "incoming";
+  const isStartable =
+    state === "idle" || state === "ended" || state === "error" || state === "success";
   const showEnd = state === "ended" || state === "error" || state === "success";
+  const isConnecting = state === "connecting";
 
-  const micAriaLabel = microphoneEnabled ? "Mute microphone" : "Unmute microphone";
+  const micAriaLabel = isStartable
+    ? "Start voice call"
+    : microphoneEnabled
+      ? "Mute microphone"
+      : "Unmute microphone";
+  const showMuteIcon = !isStartable && microphoneEnabled;
 
   return (
     <div
       className={cn(
-        "fixed inset-x-0 bottom-0 z-30 pointer-events-none",
-        state === "idle" ? "opacity-0 transition-opacity duration-300" : "opacity-100",
+        "fixed inset-x-0 bottom-0 z-30 pointer-events-none opacity-100",
       )}
     >
       <div className="pointer-events-auto w-full px-6 pb-6 sm:pb-8">
@@ -69,15 +71,15 @@ export function BottomControls({
               onClick={onMicrophoneToggle}
               aria-label={micAriaLabel}
               aria-pressed={microphoneEnabled}
-              disabled={isActive && state !== "speaking"}
+              disabled={isConnecting}
               className={cn(
                 "size-16 rounded-full border border-white/10 bg-black/50 backdrop-blur text-white",
                 !microphoneEnabled &&
                   "bg-rose-500/10 border-rose-500/20 text-rose-400",
-                isActive && state !== "speaking" && "opacity-60 pointer-events-none",
+                isConnecting && "opacity-60",
               )}
             >
-              {microphoneEnabled ? (
+              {showMuteIcon ? (
                 <MicOff className="size-6" />
               ) : (
                 <Mic className="size-6 text-accent-blue" />

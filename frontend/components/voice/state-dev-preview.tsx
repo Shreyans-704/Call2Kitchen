@@ -9,6 +9,7 @@ import type { VoiceState } from "@/types";
 
 const DEV_STATES: VoiceState[] = [
   "idle",
+  "connecting",
   "incoming",
   "listening",
   "processing",
@@ -21,6 +22,7 @@ const DEV_STATES: VoiceState[] = [
 
 const DEV_STATE_LABELS: Record<VoiceState, string> = {
   idle: "Idle",
+  connecting: "Connecting",
   incoming: "Incoming",
   listening: "Listening",
   processing: "Processing",

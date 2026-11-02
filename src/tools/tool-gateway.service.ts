@@ -66,12 +66,18 @@ export class ToolGatewayService {
       }
 
       case "quote_order": {
-        const argumentsData = ensureValidArguments(quoteRequestSchema, argumentsValue);
+        const argumentsData = ensureValidArguments(
+          quoteRequestSchema,
+          normalizeVoiceItemsArgument(argumentsValue)
+        );
         return { tool, data: await this.quoteCreationService.createQuote(argumentsData) };
       }
 
       case "place_order": {
-        const argumentsData = ensureValidArguments(createOrderRequestSchema, argumentsValue);
+        const argumentsData = ensureValidArguments(
+          createOrderRequestSchema,
+          normalizeVoiceItemsArgument(argumentsValue)
+        );
         const result = await this.orderService.createOrder(argumentsData);
         return { tool, data: { ...result.order, replayed: result.replayed } };
       }
@@ -87,4 +93,60 @@ function ensureValidArguments<Schema extends z.ZodTypeAny>(schema: Schema, value
   }
 
   return parsed.data;
+}
+
+/**
+ * Bolna custom functions support only scalar parameters and interpolate them
+ * into its JSON request without escaping embedded quotes. A JSON-encoded item
+ * list therefore produces malformed JSON before it reaches this gateway. The
+ * voice transport uses a quote-free `menuItemId:quantity,...` list instead.
+ * The adapter converts that compact list (or a legacy JSON string) into the
+ * existing quote/order schemas; the public HTTP routes remain strict about
+ * receiving arrays.
+ */
+function normalizeVoiceItemsArgument(value: unknown): unknown {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    typeof (value as { items?: unknown }).items !== "string"
+  ) {
+    return value;
+  }
+
+  const rawItems = (value as { items: string }).items.trim();
+
+  if (rawItems.startsWith("[")) {
+    try {
+      return { ...value, items: JSON.parse(rawItems) };
+    } catch {
+      throw new AppError("Invalid tool arguments", 400);
+    }
+  }
+
+  return { ...value, items: parseCompactVoiceItems(rawItems) };
+}
+
+function parseCompactVoiceItems(
+  rawItems: string
+): Array<{ menuItemId: string; quantity: number }> {
+  if (!rawItems) {
+    throw new AppError("Invalid tool arguments", 400);
+  }
+
+  return rawItems.split(",").map((pair) => {
+    const separatorIndex = pair.indexOf(":");
+    const hasExactlyOneSeparator =
+      separatorIndex > 0 && separatorIndex === pair.lastIndexOf(":");
+    const menuItemId = hasExactlyOneSeparator ? pair.slice(0, separatorIndex).trim() : "";
+    const quantityText = hasExactlyOneSeparator
+      ? pair.slice(separatorIndex + 1).trim()
+      : "";
+
+    if (!menuItemId || !/^\d+$/.test(quantityText)) {
+      throw new AppError("Invalid tool arguments", 400);
+    }
+
+    return { menuItemId, quantity: Number(quantityText) };
+  });
 }

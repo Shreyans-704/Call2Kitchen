@@ -2,6 +2,7 @@ export type StatusVariant = "idle" | "active" | "success" | "warning" | "error";
 
 export type VoiceState =
   | "idle"
+  | "connecting"
   | "incoming"
   | "listening"
   | "processing"

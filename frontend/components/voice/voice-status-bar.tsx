@@ -12,6 +12,7 @@ interface VoiceStatusBarProps {
 
 const stateLabels: Record<VoiceState, string> = {
   idle: "Ready",
+  connecting: "Connecting",
   incoming: "Incoming",
   listening: "Listening",
   processing: "Processing",
@@ -25,6 +26,7 @@ const stateLabels: Record<VoiceState, string> = {
 
 const stateVariants: Record<VoiceState, Parameters<typeof StatusIndicator>[0]["variant"] | undefined> = {
   idle: undefined,
+  connecting: "active",
   incoming: "active",
   listening: "active",
   processing: "active",
